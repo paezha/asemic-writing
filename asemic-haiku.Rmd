@@ -1,0 +1,329 @@
+---
+title: "asemic haiku"
+output: html_notebook
+---
+
+# Haiku in false writting systems
+
+The basis for this is the code of Georgios Karamanis to create asemic glyphs: check https://github.com/gkaramanis/aRtist/blob/main/asemic/asemic.R
+
+Only two packages are needed:
+```{r}
+library(tidyverse) # Easily Install and Load the 'Tidyverse'
+library(ggforce) # Accelerating 'ggplot2'
+```
+
+## Create a set of glyphs
+
+Set the parameters for creating the glyphs, that is, the number of glyphs (corresponding to letters), the number of points to generate each glyph (used by the splines function), and the cutoff for the thickness of the lines; notice that special characters are added to the set of letters:
+```{r}
+seed <- sample.int(1000000, 1)
+set.seed(seed)
+
+l <- c(letters, "'", "-", ":", "?")
+nl <- length(l) # Number of letters
+s <- sample.int(10, 1) + 2 # Points per letter
+z <- runif(1, 0, 0.5) # Thickness of strokes
+```
+
+Initialize a data frame with all letters and special characters:
+```{r}
+flo <- data.frame(letter = l) |> 
+  # Group by row
+  rowwise() |> 
+  # Mutate rows with a list of values to generate random points for the glyphs
+  mutate(
+    a = list(runif(s, 0, 2 * pi)),
+    rx = list(1 + seq(0.1, 0.5, length.out = s) * cos(a)),
+    ry = list(1 + seq(0.1, 0.3, length.out = s) * sin(a))
+    ) |> 
+  # Ungroup and unnest
+  ungroup() |> 
+  unnest(c(rx, ry)) |> 
+  # Group by row again
+  rowwise() |> 
+  # Mutate for thickness
+  mutate(
+    # Thickness of strokes
+    size = runif(1, 0, 2),
+    size = if_else(size < z, 0, size)) |> 
+  ungroup() |>
+  # Give each asemic character a letter
+  mutate(letter = rep(l, each = s))
+```
+
+Different styles can be obtained by arranging the coordinates (or not):
+```{r}
+# Randomly select one of eight possible styles
+style <- sample.int(8, 1)
+
+# Modify the glyphs as per the style selected
+switch(style,
+       # As is
+       {flo <- flo},
+       # Arrange by x coord
+       {flo <- flo |>
+         group_by(letter) |>
+         arrange(rx,
+                 .by_group = TRUE) |>
+         ungroup()},
+       # Arrange descending in x
+       {flo <- flo |>
+         group_by(letter) |>
+         arrange(desc(rx),
+                 .by_group = TRUE) |>
+         ungroup()},
+       # Arrange by y
+       {flo <- flo |>
+         group_by(letter) |>
+         arrange(ry,
+                 .by_group = TRUE) |>
+         ungroup()},
+       # Arrange descending in y
+       {flo <- flo |>
+         group_by(letter) |>
+         arrange(desc(ry),
+                 .by_group = TRUE) |>
+         ungroup()},
+       # Arrange in x and y
+       {flo <- flo |>
+         group_by(letter) |>
+         arrange(rx, 
+                 ry,
+                 .by_group = TRUE) |>
+         ungroup()},
+       # Arrange descending in x and in y
+       {flo <- flo |>
+         group_by(letter) |>
+         arrange(desc(rx), 
+                 ry,
+                 .by_group = TRUE) |>
+         ungroup()},
+       # Arrange in x and descending in y
+       {flo <- flo |>
+         group_by(letter) |>
+         arrange(rx, 
+                 desc(ry),
+                 .by_group = TRUE) |>
+         ungroup()},
+       # Arrange descending both in x and y
+       {flo <- flo |>
+         group_by(letter) |>
+         arrange(desc(rx), 
+                 desc(ry),
+                 .by_group = TRUE) |>
+         ungroup()})
+```
+
+## Copy text
+
+Data frame with text:
+```{r}
+haiku <- data.frame(text = c(paste0(sample(l, 5), collapse = ""),
+                             paste0(sample(l, 7), collapse = ""),
+                             paste0(sample(l, 5), collapse = ""))) |>
+  # Convert all to lower case
+  mutate(text = str_to_lower(text))
+```
+
+Prepare text:
+```{r}
+#find the maximum width of a line in number of characters
+pad <- max(str_length(haiku$text))
+
+# Pad the strings to have the same width
+haiku <- haiku |>
+  mutate(text = str_pad(text, width = pad, side = "right"))
+```
+
+## Left-right writing:
+
+Convert text to single characters and add the coordinates to place the glyphs in the block of text:
+```{r}
+atext <- data.frame(x = rep(1:pad, 3),
+                   y = rep(3:1, each = pad),
+                   letter = str_split(haiku$text, pattern = "") |> 
+                     unlist(),
+                   type = "text")
+```
+
+Create signature:
+```{r}
+signature <- data.frame(x = rep(max(atext$x) + 1, 2),
+                        y = c(0, 0),
+                        letter = c("a", "p"),
+                        type = "signature") 
+```
+
+Bind signature to data frame with text:
+```{r}
+atext <- rbind(atext, 
+               signature)
+```
+
+Join asemic characters to text:
+```{r}
+atext_lr <- atext %>%
+  left_join(flo,
+            by = "letter")
+
+atext_lr <- atext_lr |>
+  # Adjust the values of the points rx and ry by their position in the block of text (row and column)
+  mutate(rx = rx + x, 
+         ry = ry + y,
+         # Delete white spaces
+         rx = ifelse(letter == " ", NA, rx),
+         ry = ifelse(letter == " ", NA, ry))
+```
+
+Plot:
+```{r}
+ggplot(atext_lr, 
+       aes(x = rx, 
+           y = ry, 
+           color = type,
+           group = y, 
+           size = size)) +
+  # Define colors for each typeglyphs
+  scale_color_manual(values = c("text" = "black", "signature" = "red")) +
+  # Use the coordinates to create splines: these are the glyphs
+  geom_bspline2(n = 800, lineend = "round") +
+  scale_size_continuous(range = c(0, 0.8)) +
+  theme_void() +
+  theme(aspect.ratio = 0.25,
+    legend.position = "none",
+    plot.background = element_rect(fill = "grey97", color = NA)
+  )
+
+# Save named image
+ggsave(glue::glue(here::here(), "/output/asemic-haiku-lr-{seed}.png"),
+      height = 8,
+      width = 10,
+      units = "cm")
+```
+
+Plot in polar coordinates:
+```{r}
+atext_lr |>
+  mutate(rx = rx + runif(1, 0, 4),
+         ry = ry + runif(1, 0, 4)) |>
+  ggplot(aes(x = rx, 
+           y = ry, 
+           color = type,
+           group = y, 
+           size = size)) +
+  # Define colors for each typeglyphs
+  scale_color_manual(values = c("text" = "black", "signature" = "red")) +
+  # Use the coordinates to create splines: these are the glyphs
+  geom_bspline2(n = 800, lineend = "round") +
+  scale_size_continuous(range = c(0, 0.8)) +
+  coord_polar() +
+  theme_void() +
+  theme(aspect.ratio = 1,
+    legend.position = "none",
+    plot.background = element_rect(fill = "grey97", color = NA)
+  )
+
+# Save named image
+ggsave(glue::glue(here::here(), "/output/asemic-haiku-lr-polar-{seed}.png"),
+      height = 10,
+      width = 10,
+      units = "cm")
+```
+
+## Right-left, bottom-down writing:
+
+Convert text to vector add coordinates for placement in block of text:
+```{r}
+atext <- data.frame(x = rep(3:1, each = pad),
+                   y = rep(pad:1, 3),
+                   letter = str_split(haiku$text, pattern = "") |> 
+                     unlist(),
+                   type = "text")
+```
+
+Create signature:
+```{r}
+signature <- data.frame(x = rep(max(atext$x) + 1, 2),
+                        y = c(1, 0),
+                        letter = c("a", "p"),
+                        type = "signature") 
+```
+
+Bind signature to data frame with text:
+```{r}
+atext <- rbind(atext, 
+               signature)
+```
+
+Join asemic characters to text:
+```{r}
+atext_bd <- atext %>%
+  left_join(flo,
+            by = "letter")
+
+atext_bd <- atext_bd |>
+  # Adjust the values of the points rx and ry by their position in the block of text (row and column)
+  mutate(rx = rx + x, 
+         ry = ry + y,
+         # Delete white spaces
+         rx = ifelse(letter == " ", NA, rx),
+         ry = ifelse(letter == " ", NA, ry))
+```
+
+Plot:
+```{r}
+ggplot(atext_bd,
+       aes(x = rx, 
+           y = ry, 
+           color = factor(type),
+           group = x, 
+           size = size)) +
+  # Define colors for each typeglyphs
+  scale_color_manual(values = c("text" = "black", "signature" = "red")) +
+  # Use the coordinates to create splines: these are the glyphs
+  geom_bspline2(n = 800, lineend = "round") +
+  scale_size_continuous(range = c(0, 0.8)) +
+  theme_void() +
+  theme(aspect.ratio = 3,
+    legend.position = "none",
+    plot.background = element_rect(fill = "grey90", 
+                                   color = NA))
+
+# Save named image
+ggsave(glue::glue(here::here(), "/output/asemic-haiku-bd-{seed}.png"),
+       height = 10,
+       width = 8,
+       units = "cm")
+```
+
+Plot in polar coordinates:
+```{r}
+atext_bd |>
+  mutate(rx = rx + runif(1, 0, 4),
+         ry = ry + runif(1, 0, 4)) |>
+ggplot(aes(x = rx, 
+           y = ry, 
+           color = factor(type),
+           group = x, 
+           size = size)) +
+  # Define colors for each typeglyphs
+  scale_color_manual(values = c("text" = "black", "signature" = "red")) +
+  # Use the coordinates to create splines: these are the glyphs
+  geom_bspline2(n = 800, 
+                lineend = "round") +
+  scale_size_continuous(range = c(0, 1.25)) +
+  coord_polar() +
+  theme_void() +
+  theme(aspect.ratio = 1,
+    legend.position = "none",
+    plot.background = element_rect(fill = "grey90", 
+                                   color = NA))
+
+# Save named image
+ggsave(glue::glue(here::here(), "/output/asemic-haiku-bd-polar-{seed}.png"),
+       height = 10,
+       width = 10,
+       units = "cm")
+```
+

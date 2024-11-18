@@ -1,0 +1,241 @@
+---
+title: "asemic haiku using truchet tiles"
+output: html_notebook
+---
+
+# Haiku in false writting systems
+
+The basis for this is the code of Georgios Karamanis to create asemic glyphs: check https://github.com/gkaramanis/aRtist/blob/main/asemic/asemic.R
+
+Only two packages are needed:
+```{r}
+library(ggforce) # Accelerating 'ggplot2'
+library(purrr) # Functional Programming Tools
+library(tidyverse) # Easily Install and Load the 'Tidyverse'
+library(truchet) # Package for creating Truchet tiles and random mosaics
+```
+
+## Create a set of glyphs
+
+Set the parameters for creating the glyphs, that is, the number of glyphs (corresponding to letters), the number of points to generate each glyph (used by the splines function), and the cutoff for the thickness of the lines; notice that special characters are added to the set of letters:
+```{r}
+seed <- sample.int(1000000, 1)
+set.seed(seed)
+
+l <- c(letters, "'", "-", ":", "?")
+nl <- length(l) # Number of letters
+s <- sample.int(10, 1) + 2 # Points per letter
+z <- runif(1, 0, 0.5) # Thickness of strokes
+```
+
+All combinations of tiles:
+```{r}
+flo <- expand.grid(tile1 = c("Ac", "Bc", "Cc", "Dc"),
+            tile2 = c("Ac", "Bc", "Cc", "Dc"),
+            tile3 = c("Ac", "Bc", "Cc", "Dc"),
+            tile4 = c("Ac", "Bc", "Cc", "Dc")) |>
+  slice_sample(n = length(l)) |>
+  mutate(letter = l) |>
+  pivot_longer(cols = -letter,
+               names_to = "tile",
+               values_to = "type") |> 
+  mutate(x = case_when(tile == "tile1" ~ -0.5,
+                       tile == "tile2" ~ 0.5,
+                       tile == "tile3" ~ -0.5,
+                       tile == "tile4" ~ 0.5),
+         y = case_when(tile == "tile1" ~ 0.5,
+                       tile == "tile2" ~ 0.5,
+                       tile == "tile3" ~ -0.5,
+                       tile == "tile4" ~ -0.5),
+         b = case_when(tile == "tile1" ~ runif(1, 0.01, 0.5),
+                       tile == "tile2" ~ runif(1, 0.5, 0.99),
+                       tile == "tile3" ~ runif(1, 0.01, 0.5),
+                       tile == "tile4" ~ runif(1, 0.51, 0.99)))
+```
+
+## Generate text
+
+Data frame with text:
+```{r}
+haiku <- data.frame(text = c(paste0(sample(l, 5, replace = TRUE), collapse = ""),
+                             paste0(sample(l, 7, replace = TRUE), collapse = ""),
+                             paste0(sample(l, 5, replace = TRUE), collapse = ""))) |>
+  # Convert all to lower case
+  mutate(text = str_to_lower(text))
+```
+
+Prepare text:
+```{r}
+#find the maximum width of a line in number of characters
+pad <- max(str_length(haiku$text))
+
+# Pad the strings to have the same width
+haiku <- haiku |>
+  mutate(text = str_pad(text, width = pad, side = "right"))
+```
+
+Convert text to vector and add coordinates for placement in block of text; each glyph is actually a composite of 4 tiles, so x and y must account for this to space the glyphs properly:
+```{r}
+atext <- data.frame(x = rep(seq(5, 1, -2), each = pad),
+                   y = rep(seq(pad * 2, 1, -2), 3),
+                   letter = str_split(haiku$text, pattern = "") |> 
+                     unlist(),
+                   text_category = "text") |>
+  filter(letter != " ")
+```
+
+Join glyphs to text and calculate the coordinates for the center of each glyph:
+```{r}
+atext_bd <- atext |> left_join(flo, by = "letter") |>
+  transmute(x = x.x + x.y,
+            y = y.x + y.y,
+            text_category,
+            tile,
+            type,
+            b)
+```
+
+Define the centroids of the glyphs (not the individual tiles!); this is needed to scale the glyphs later:
+```{r}
+
+atext_bd_centroid_sfc <- data.frame(x = rep(atext$x, 
+                                            each = 8),
+                                    y = rep(atext$y, 
+                                            each = 8)) |> 
+  st_as_sf(coords = c("x", "y")) |>
+  st_centroid() |>
+  st_geometry()
+```
+
+Create the mosaic with the glyphs:
+```{r}
+# Elements for assembling the mosaic
+x_c <- atext_bd$x
+y_c <- atext_bd$y
+type <- as.character(atext_bd$type)
+b <- atext_bd$b
+
+atext_bd <- pmap_dfr(list(x_c, y_c, type, b), st_truchet_flex)
+
+# Join the letters to the 
+atext_bd$letter <- rep(atext$letter, each = 8)
+```
+
+Scale the glyphs:
+```{r}
+# Retrieve the geometry of the tiles
+atext_bd_sfc <- st_geometry(atext_bd)
+
+# Displace the tiles to zero (by substracting the centroid), scale, and displace back to their original positions
+atext_bd_scale <- (atext_bd_sfc - atext_bd_centroid_sfc) * 0.9 + atext_bd_centroid_sfc
+
+# Update the geometry with that of the scaled glyphs
+atext_bd <- atext_bd |>
+  st_set_geometry(atext_bd_scale)
+```
+
+Create signature:
+```{r}
+#seed_signature <- sample.int(10000, 1)
+set.seed(5453)
+
+s_signature <- sample.int(4, 1) + 2 # Points per letter
+z_signature <- runif(1, 0, 0.5) # Thickness of strokes
+
+flo <- data.frame(letter = c("a", "p")) |> 
+  # Group by row
+  rowwise() |> 
+  # Mutate rows with a list of values to generate random points for the glyphs
+  mutate(
+    a = list(runif(s_signature, 0, 2 * pi)),
+    rx = list(1 + seq(0.1, 1.5, length.out = s_signature) * cos(a)),
+    ry = list(1 + seq(0.1, 0.8, length.out = s_signature) * sin(a))
+    ) |> 
+  # Ungroup and unnest
+  ungroup() |> 
+  unnest(c(rx, ry)) |> 
+  # Group by row again
+  rowwise() |> 
+  # Mutate for thickness
+  mutate(
+    # Thickness of strokes
+    size = runif(1, 0, 2),
+    size = if_else(size < z_signature, 0, size)) |> 
+  ungroup() |>
+  # Give each asemic character a letter
+  mutate(letter = rep(c("a", "p"), each = s_signature))
+```
+
+```{r}
+signature <- data.frame(x = rep(max(atext$x) + 1, 2),
+                        y = c(1, 0),
+                        letter = c("a", "p")) 
+```
+
+Join asemic characters to text:
+```{r}
+signature <- signature %>%
+  left_join(flo,
+            by = "letter")
+
+signature <- signature |>
+  # Adjust the values of the points rx and ry by their position in the block of text (row and column)
+  mutate(rx = rx + x, 
+         ry = ry + y,
+         # Delete white spaces
+         rx = ifelse(letter == " ", NA, rx),
+         ry = ifelse(letter == " ", NA, ry))
+```
+
+```{r}
+ggplot() +
+  geom_bspline2(data = signature,
+                aes(x = rx, 
+                     y = ry,
+                     size = size,
+                    group = x),
+                n = 800, 
+                lineend = "round")
+```
+
+
+Plot:
+```{r}
+atext_bd |> 
+  # Dissolve the tiles to obtain a cleaner look for the glyphs
+  st_truchet_dissolve() |>
+  #mutate(color = as.factor(color)) |>
+  filter(color == "1") |>
+  ggplot() + 
+  # Union of the tiles to add a frame to each glyph
+  geom_sf(data = atext_bd |>
+            st_union(),
+          fill = "white",
+          color = "black") +
+  geom_sf(fill = "black",
+          color = NA,
+          size = 1) +
+  geom_bspline2(data = signature,
+                aes(x = rx, 
+                    y = ry,
+                    size = size,
+                    group = x),
+                color = "red",
+                #size = 1,
+                n = 800, 
+                lineend = "round") +
+  scale_size(range = c(0, 1.5)) +
+  #scale_fill_distiller(direction = 1) +
+  theme_void() +
+  theme(legend.position = "none",
+    plot.background = element_rect(fill = "grey90", 
+                                   color = NA))
+
+# Save named image
+ggsave(glue::glue(here::here(), "/output/asemic-haiku-truchet-{seed}.png"),
+       height = 10,
+       width = 8,
+       units = "cm")
+
+```
+
